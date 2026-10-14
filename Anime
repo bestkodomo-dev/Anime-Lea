@@ -1,0 +1,2168 @@
+--[[
+╔══════════════════════════════════════════════════════════════╗
+║   AUTO WARP FARM — Anime Legacy Simulator                    ║
+║   โหมด: วาปจี้มอน ตีจนตาย แล้ววาปไปตัวต่อไปทันที วนลูปไม่หยุด      ║
+╚══════════════════════════════════════════════════════════════╝
+]]
+
+-- ============================================================
+-- CONFIGURATION
+-- ============================================================
+local CFG = {
+    HeightOffset = 3.5,    -- ลอยอยู่เหนือหัวมอน (สตั๊ด) ปลอดภัย ไม่ตกแมพ ไม่โดนตบ
+    DistanceOffset = 1.5,  -- ระยะห่างด้านหลังมอน
+    FollowSmoothness = 12, -- ความเร็วในการเคลื่อนตามเป้าหมาย ยิ่งมากยิ่งตามไว
+    AttackSpeed = 0.1,     -- ดีเลย์การยิงคำสั่งโจมตีซ้ำ (วินาที)
+    AutoSkill = true,      -- ปล่อยสกิลอาวุธเมื่อคูลดาวน์พร้อม
+    Noclip = true,         -- ทะลุกำแพง/มอน ไม่ให้ตัวละครดีดหรือติดบั๊ก
+    DEBUG = true,          -- แสดงข้อความใน console
+}
+
+-- ============================================================
+-- INITIALIZATION
+-- ============================================================
+local RS                = game:GetService("ReplicatedStorage")
+local Players           = game:GetService("Players")
+local RunService        = game:GetService("RunService")
+local CollectionService = game:GetService("CollectionService")
+local UserInputService  = game:GetService("UserInputService")
+local LP                = Players.LocalPlayer
+
+local function Log(msg)
+    if CFG.DEBUG then
+        print("[WarpFarm] " .. tostring(msg))
+    end
+end
+
+-- โหลด Omni Framework ของเกม
+local Omni
+local ok, err = pcall(function()
+    Omni = require(RS:WaitForChild("Omni", 10))
+end)
+
+if not ok or not Omni then
+    warn("[WarpFarm] ❌ โหลด Omni ไม่สำเร็จ: " .. tostring(err))
+    warn("[WarpFarm] กรุณารันสคริปต์นี้ตอนอยู่ในเกม Anime Legacy Simulator")
+    return
+end
+
+-- รอ PlayerData
+Log("⏳ กำลังรอข้อมูลตัวละคร...")
+local timeout = 25
+local elapsed = 0
+while not (Omni.Data and Omni.Data.Maps and Omni.Data.Fighters) do
+    task.wait(1)
+    elapsed += 1
+    if elapsed >= timeout then
+        warn("[WarpFarm] ❌ รอ PlayerData นานเกินไป")
+        return
+    end
+end
+
+Log(string.format("✅ ข้อมูลพร้อม! แมพปัจจุบัน: %s", tostring(Omni.Data.Maps.Current)))
+
+local farmEnabled = true
+local farmButton
+local farmToggleTrack
+local farmToggleKnob
+local autoEquipEnabled = true
+local autoEquipButton
+local autoEquipToggleTrack
+local autoEquipToggleKnob
+local autoClaimAchievementsEnabled = true
+local autoClaimAchievementsButton
+local autoClaimAchievementsToggleTrack
+local autoClaimAchievementsToggleKnob
+local autoQuestsEnabled = true
+local autoQuestsButton
+local autoQuestsToggleTrack
+local autoQuestsToggleKnob
+local autoLevelEnabled = true
+local autoDailyRewardsEnabled = true
+local autoTimeRewardsEnabled = true
+local selectedLevelStat = "Fighter Damage"
+local selectedMapName
+local selectedDungeonModeName
+local autoDungeonEnabled = false
+local lastDungeonJoinAttempt = 0
+local autoGachaEnabled = false
+local selectedGachaName
+local lastAutoUpgradeKey
+local requestedDailyRewards = {}
+local requestedTimeRewards = {}
+local lastDungeonStatusMessageAt = 0
+local dailyRewardRetryInterval = 5
+
+local function SetFarmEnabled(enabled)
+    farmEnabled = enabled
+
+    if farmToggleTrack and farmToggleKnob then
+        farmToggleTrack.BackgroundColor3 = enabled and Color3.fromRGB(40, 205, 55) or Color3.fromRGB(35, 38, 40)
+        farmToggleKnob.Position = enabled and UDim2.new(1, -27, 0.5, -12) or UDim2.new(0, 3, 0.5, -12)
+    end
+
+    local settingsOk, settingsError = pcall(function()
+        Omni.Signal:Fire("General", "Settings", "Set", "Auto Attack", enabled)
+        Omni.Signal:Fire("General", "Settings", "Set", "Send All Fighters", enabled)
+    end)
+    if not settingsOk then
+        warn("[WarpFarm] เปลี่ยนการตั้งค่าโจมตีไม่สำเร็จ: " .. tostring(settingsError))
+    end
+
+    Log(enabled and "▶️ เปิดฟาร์มแล้ว" or "⏸️ หยุดฟาร์มแล้ว")
+end
+
+local function EquipBestFighters()
+    local equipOk, equipError = pcall(function()
+        Omni.Signal:Fire("General", "Fighters", "EquipBest")
+    end)
+    if not equipOk then
+        warn("[WarpFarm] ใส่นักสู้ที่ดีที่สุดไม่สำเร็จ: " .. tostring(equipError))
+        return
+    end
+
+    Log("⭐ กำลังใส่นักสู้ที่ดีที่สุด")
+end
+
+local function EquipBestWeapons()
+    local equipOk, equipError = pcall(function()
+        Omni.Signal:Fire("General", "Weapons", "EquipBest")
+    end)
+    if not equipOk then
+        warn("[WarpFarm] ใส่อาวุธที่ดีที่สุดไม่สำเร็จ: " .. tostring(equipError))
+        return
+    end
+
+    Log("⚔️ กำลังใส่อาวุธที่ดีที่สุด")
+end
+
+local function EquipBestGear()
+    EquipBestFighters()
+    EquipBestWeapons()
+end
+
+local function SetAutoEquipEnabled(enabled)
+    autoEquipEnabled = enabled
+
+    if autoEquipToggleTrack and autoEquipToggleKnob then
+        autoEquipToggleTrack.BackgroundColor3 = enabled and Color3.fromRGB(40, 205, 55) or Color3.fromRGB(35, 38, 40)
+        autoEquipToggleKnob.Position = enabled and UDim2.new(1, -27, 0.5, -12) or UDim2.new(0, 3, 0.5, -12)
+    end
+
+    Log(enabled and "⭐ เปิดใส่นักสู้ที่ดีที่สุดอัตโนมัติ" or "⏸️ ปิดใส่นักสู้ที่ดีที่สุดอัตโนมัติ")
+    if enabled then
+        EquipBestGear()
+    end
+end
+
+local function SetAutoClaimAchievementsEnabled(enabled)
+    autoClaimAchievementsEnabled = enabled
+
+    if autoClaimAchievementsToggleTrack and autoClaimAchievementsToggleKnob then
+        autoClaimAchievementsToggleTrack.BackgroundColor3 = enabled and Color3.fromRGB(40, 205, 55) or Color3.fromRGB(35, 38, 40)
+        autoClaimAchievementsToggleKnob.Position = enabled and UDim2.new(1, -27, 0.5, -12) or UDim2.new(0, 3, 0.5, -12)
+    end
+
+    local settingsOk, settingsError = pcall(function()
+        Omni.Signal:Fire("General", "Settings", "Set", "Auto Achievements", enabled)
+    end)
+    if not settingsOk then
+        warn("[WarpFarm] เปลี่ยนการรับความสำเร็จอัตโนมัติไม่สำเร็จ: " .. tostring(settingsError))
+        return
+    end
+
+    Log(enabled and "🏆 เปิดรับความสำเร็จอัตโนมัติ" or "⏸️ ปิดรับความสำเร็จอัตโนมัติ")
+    if enabled then
+        local claimOk, claimError = pcall(function()
+            Omni.Signal:Fire("General", "Achievements", "ClaimAll")
+        end)
+        if not claimOk then
+            warn("[WarpFarm] รับความสำเร็จที่ทำเสร็จแล้วไม่สำเร็จ: " .. tostring(claimError))
+        end
+    end
+end
+
+local function SetAutoQuestsEnabled(enabled)
+    autoQuestsEnabled = enabled
+
+    if autoQuestsToggleTrack and autoQuestsToggleKnob then
+        autoQuestsToggleTrack.BackgroundColor3 = enabled and Color3.fromRGB(40, 205, 55) or Color3.fromRGB(35, 38, 40)
+        autoQuestsToggleKnob.Position = enabled and UDim2.new(1, -27, 0.5, -12) or UDim2.new(0, 3, 0.5, -12)
+    end
+
+    local settingsOk, settingsError = pcall(function()
+        Omni.Signal:Fire("General", "Settings", "Set", "Auto Quests", enabled)
+    end)
+    if not settingsOk then
+        warn("[WarpFarm] เปลี่ยน Auto Quests ไม่สำเร็จ: " .. tostring(settingsError))
+        return
+    end
+
+    Log(enabled and "📜 เปิด Auto Quests แล้ว" or "⏸️ ปิด Auto Quests แล้ว")
+    if enabled then
+        local claimOk, claimError = pcall(function()
+            Omni.Signal:Fire("General", "Quests", "ClaimAll")
+        end)
+        if not claimOk then
+            warn("[WarpFarm] รับเควสที่ทำเสร็จแล้วไม่สำเร็จ: " .. tostring(claimError))
+        end
+    end
+end
+
+local function ClaimAvailableDailyRewards()
+    local dailyRewards = Omni.Shared and Omni.Shared.DailyRewards
+    local dailyData = Omni.Data and Omni.Data.DailyRewards
+    if typeof(dailyRewards) ~= "table" or typeof(dailyData) ~= "table"
+        or typeof(dailyData.Claimed) ~= "table" then
+        return
+    end
+
+    local start = dailyData.Start
+    if typeof(start) ~= "number" then
+        warn("[WarpFarm] ข้อมูลเวลาเริ่ม Daily Rewards ไม่ถูกต้อง")
+        return
+    end
+
+    local lastAvailableDay = 1
+    if start > 0 then
+        lastAvailableDay = math.floor((workspace:GetServerTimeNow() - start) / 86400) + 1
+    end
+
+    local availableDayCount = math.min(lastAvailableDay, #dailyRewards)
+    for dayIndex = 1, availableDayCount do
+        local dayKey = tostring(dayIndex)
+        if dailyData.Claimed[dayKey] == true then
+            requestedDailyRewards[dayKey] = nil
+            continue
+        end
+        if requestedDailyRewards[dayKey]
+            and os.clock() - requestedDailyRewards[dayKey] < dailyRewardRetryInterval then
+            continue
+        end
+
+        requestedDailyRewards[dayKey] = os.clock()
+        local claimOk, claimError = pcall(function()
+            Omni.Signal:Fire("General", "DailyRewards", "Claim", dayIndex)
+        end)
+        if not claimOk then
+            requestedDailyRewards[dayKey] = nil
+            warn("[WarpFarm] รับ Daily Reward วันที่ " .. dayKey .. " ไม่สำเร็จ: " .. tostring(claimError))
+        else
+            Log("🎁 ส่งคำขอรับ Daily Reward วันที่ " .. dayKey)
+        end
+    end
+end
+
+local function ClaimAvailableTimeRewards()
+    local timeRewards = Omni.Shared and Omni.Shared.TimeRewards
+    local timeData = Omni.Data and Omni.Data.TimeRewards
+    if typeof(timeRewards) ~= "table" or typeof(timeData) ~= "table"
+        or typeof(timeData.Claimed) ~= "table"
+        or typeof(timeData.TimePlayed) ~= "number" then
+        return
+    end
+
+    for rewardIndex, rewardInfo in ipairs(timeRewards) do
+        if typeof(rewardInfo) ~= "table" or typeof(rewardInfo.Time) ~= "number" then
+            continue
+        end
+
+        local rewardKey = tostring(rewardIndex)
+        if timeData.Claimed[rewardKey] == true then
+            requestedTimeRewards[rewardKey] = nil
+            continue
+        end
+        if rewardInfo.Time > timeData.TimePlayed then
+            continue
+        end
+        if requestedTimeRewards[rewardKey] and os.clock() - requestedTimeRewards[rewardKey] < 15 then
+            continue
+        end
+
+        requestedTimeRewards[rewardKey] = os.clock()
+        local claimOk, claimError = pcall(function()
+            Omni.Signal:Fire("General", "TimeRewards", "Claim", rewardIndex)
+        end)
+        if not claimOk then
+            requestedTimeRewards[rewardKey] = nil
+            warn("[WarpFarm] รับ Time Reward #" .. rewardKey .. " ไม่สำเร็จ: " .. tostring(claimError))
+        else
+            Log("⏱️ ส่งคำขอรับ Time Reward #" .. rewardKey)
+        end
+    end
+end
+
+local function SetAutoLevelEnabled(enabled)
+    autoLevelEnabled = enabled
+    lastAutoUpgradeKey = nil
+    Log(enabled and "📈 เปิดอัปค่าสเตตัสอัตโนมัติ" or "⏸️ ปิดอัปค่าสเตตัสอัตโนมัติ")
+end
+
+local function SetAutoDailyRewardsEnabled(enabled)
+    autoDailyRewardsEnabled = enabled
+    requestedDailyRewards = {}
+    Log(enabled and "🎁 เปิดรับ Daily Rewards อัตโนมัติ" or "⏸️ ปิดรับ Daily Rewards อัตโนมัติ")
+    if enabled then
+        ClaimAvailableDailyRewards()
+    end
+end
+
+local function SetAutoTimeRewardsEnabled(enabled)
+    local settingsOk, settingsError = pcall(function()
+        Omni.Signal:Fire("General", "Settings", "Set", "Auto Time Rewards", enabled)
+    end)
+    if not settingsOk then
+        warn("[WarpFarm] เปลี่ยน Auto Time Rewards ไม่สำเร็จ: " .. tostring(settingsError))
+        return false
+    end
+
+    autoTimeRewardsEnabled = enabled
+    Log(enabled and "⏱️ เปิดรับ Time Rewards อัตโนมัติ" or "⏸️ ปิดรับ Time Rewards อัตโนมัติ")
+    if enabled then
+        ClaimAvailableTimeRewards()
+    end
+    return true
+end
+
+local function UpgradeSelectedLevelStat()
+    if not autoLevelEnabled then
+        return
+    end
+
+    local playerLevel = Omni.Shared and Omni.Shared.PlayerLevel
+    local levelData = Omni.Data and Omni.Data.Level
+    local stats = playerLevel and playerLevel.List and playerLevel.List.Stats
+    if not playerLevel or not levelData or not stats or not stats[selectedLevelStat] then
+        local invalidStatKey = "invalid:" .. tostring(selectedLevelStat)
+        if lastAutoUpgradeKey ~= invalidStatKey then
+            warn("[WarpFarm] ไม่พบข้อมูลสเตตัสที่เลือก: " .. tostring(selectedLevelStat))
+            lastAutoUpgradeKey = invalidStatKey
+        end
+        return
+    end
+
+    local pointsOk, availablePoints = pcall(function()
+        return playerLevel.GetAvailablePoints(Omni.Data)
+    end)
+    if not pointsOk then
+        warn("[WarpFarm] อ่านแต้มเลเวลที่เหลือไม่สำเร็จ: " .. tostring(availablePoints))
+        return
+    end
+    if typeof(availablePoints) ~= "number" or availablePoints <= 0 then
+        return
+    end
+
+    local currentStatPoints = levelData.Stats[selectedLevelStat] or 0
+    local upgradeKey = table.concat({
+        tostring(levelData.Amount),
+        selectedLevelStat,
+        tostring(currentStatPoints),
+        tostring(availablePoints)
+    }, ":")
+    if upgradeKey == lastAutoUpgradeKey then
+        return
+    end
+
+    local upgradeOk, upgradeError = pcall(function()
+        Omni.Signal:Fire("General", "PlayerLevel", "UpgradeStat", selectedLevelStat, availablePoints)
+    end)
+    if not upgradeOk then
+        warn("[WarpFarm] อัปค่าสเตตัสอัตโนมัติไม่สำเร็จ: " .. tostring(upgradeError))
+        return
+    end
+
+    lastAutoUpgradeKey = upgradeKey
+    Log(string.format("📈 ลงแต้มเลเวล %d แต้มให้ %s", availablePoints, selectedLevelStat))
+end
+
+local function GetOwnedMaps()
+    local maps = Omni.Shared and Omni.Shared.Maps and Omni.Shared.Maps.List
+    if typeof(maps) ~= "table" then
+        return {}
+    end
+
+    local ownsMap = Omni.Utils and Omni.Utils.PlayerStats and Omni.Utils.PlayerStats.OwnsMap
+    local currentMap = Omni.Data and Omni.Data.Maps and Omni.Data.Maps.Current
+    local availableMaps = {}
+    for mapName, mapInfo in pairs(maps) do
+        local owned = mapName == currentMap
+        if not owned and ownsMap then
+            local ownsOk, ownsResult = pcall(function()
+                return ownsMap(mapName, Omni.Data)
+            end)
+            if not ownsOk then
+                warn("[WarpFarm] ตรวจสอบสิทธิ์แมพ " .. tostring(mapName) .. " ไม่สำเร็จ: " .. tostring(ownsResult))
+            else
+                owned = ownsResult == true
+            end
+        end
+
+        if owned then
+            table.insert(availableMaps, {
+                Name = mapName,
+                Index = mapInfo.Index or math.huge
+            })
+        end
+    end
+
+    table.sort(availableMaps, function(a, b)
+        if a.Index == b.Index then
+            return a.Name < b.Name
+        end
+        return a.Index < b.Index
+    end)
+    return availableMaps
+end
+
+local function IsMapUnlocked(mapName)
+    if typeof(mapName) ~= "string" or mapName == "" then
+        return false
+    end
+
+    local currentMap = Omni.Data and Omni.Data.Maps and Omni.Data.Maps.Current
+    if mapName == currentMap then
+        return true
+    end
+
+    local ownsMap = Omni.Utils and Omni.Utils.PlayerStats and Omni.Utils.PlayerStats.OwnsMap
+    if not ownsMap then
+        return false
+    end
+
+    local ownsOk, ownsResult = pcall(function()
+        return ownsMap(mapName, Omni.Data)
+    end)
+    if not ownsOk then
+        warn("[WarpFarm] ตรวจสอบสิทธิ์แมพ " .. tostring(mapName) .. " ไม่สำเร็จ: " .. tostring(ownsResult))
+        return false
+    end
+    return ownsResult == true
+end
+
+local function GetUnlockedDungeonModes()
+    local gamemodes = Omni.Shared and Omni.Shared.Gamemodes and Omni.Shared.Gamemodes.List
+    if typeof(gamemodes) ~= "table" then
+        return {}
+    end
+
+    local modes = {}
+    for modeName, modeInfo in pairs(gamemodes) do
+        if typeof(modeInfo) == "table"
+            and modeInfo.Type == "Dungeon"
+            and modeInfo.Style == "Scheduled"
+            and IsMapUnlocked(modeInfo.MapName) then
+            table.insert(modes, {
+                Name = modeName,
+                Difficulty = modeInfo.Difficulty or "Unknown"
+            })
+        end
+    end
+
+    table.sort(modes, function(a, b)
+        local order = Omni.Shared.Gamemodes.DifficultyOrder or {}
+        local aIndex = table.find(order, a.Difficulty) or math.huge
+        local bIndex = table.find(order, b.Difficulty) or math.huge
+        if aIndex == bIndex then
+            return a.Name < b.Name
+        end
+        return aIndex < bIndex
+    end)
+    return modes
+end
+
+local function GetUnlockedGachas()
+    local gachas = Omni.Shared and Omni.Shared.Gacha and Omni.Shared.Gacha.List
+    if typeof(gachas) ~= "table" then
+        return {}
+    end
+
+    local result = {}
+    for gachaName, gachaInfo in pairs(gachas) do
+        if typeof(gachaInfo) == "table"
+            and typeof(gachaInfo.Source) == "table"
+            and gachaInfo.Source.Type == "Normal"
+            and (not gachaInfo.Map or IsMapUnlocked(gachaInfo.Map)) then
+            table.insert(result, {
+                Name = gachaName,
+                Cost = gachaInfo.Price and gachaInfo.Price.Amount,
+                Currency = gachaInfo.Price and gachaInfo.Price.Name
+            })
+        end
+    end
+
+    table.sort(result, function(a, b)
+        return a.Name < b.Name
+    end)
+    return result
+end
+
+local function SetAutoGachaEnabled(enabled)
+    local gachas = GetUnlockedGachas()
+    local selectedIsAvailable = false
+    for _, gachaInfo in ipairs(gachas) do
+        if gachaInfo.Name == selectedGachaName then
+            selectedIsAvailable = true
+            break
+        end
+    end
+
+    if enabled and not selectedIsAvailable then
+        selectedGachaName = gachas[1] and gachas[1].Name or nil
+        if not selectedGachaName then
+            warn("[WarpFarm] ไม่พบกาชาที่ปลดล็อกแล้ว")
+            return false
+        end
+    end
+
+    if enabled then
+        local startOk, startError = pcall(function()
+            Omni.Signal:FireSelf("Interface", "Gacha", "Resume", selectedGachaName)
+        end)
+        if not startOk then
+            autoGachaEnabled = false
+            warn("[WarpFarm] เริ่มหมุนกาชาอัตโนมัติไม่สำเร็จ: " .. tostring(startError))
+            return false
+        end
+        autoGachaEnabled = true
+        Log("🎰 เปิด Auto Gacha: " .. tostring(selectedGachaName))
+    else
+        local stopOk, stopError = pcall(function()
+            Omni.Signal:FireSelf("Interface", "Gacha", "Stop")
+        end)
+        if not stopOk then
+            warn("[WarpFarm] หยุดหมุนกาชาอัตโนมัติไม่สำเร็จ: " .. tostring(stopError))
+            return false
+        end
+        autoGachaEnabled = false
+        Log("⏸️ ปิด Auto Gacha")
+    end
+end
+
+local function TeleportToSelectedMap()
+    local availableMaps = GetOwnedMaps()
+    if #availableMaps == 0 then
+        warn("[WarpFarm] ไม่พบแมพที่สามารถเทเลพอร์ตไปได้")
+        return
+    end
+
+    local selectedIsAvailable = false
+    for _, map in ipairs(availableMaps) do
+        if map.Name == selectedMapName then
+            selectedIsAvailable = true
+            break
+        end
+    end
+    if not selectedIsAvailable then
+        selectedMapName = availableMaps[1].Name
+    end
+
+    local teleportOk, teleportResult = pcall(function()
+        return Omni.Signal:Invoke("General", "Maps", "Teleport", selectedMapName)
+    end)
+    if not teleportOk or teleportResult == false then
+        warn("[WarpFarm] เทเลพอร์ตไป " .. tostring(selectedMapName) .. " ไม่สำเร็จ: " .. tostring(teleportResult))
+        return
+    end
+
+    Log("🗺️ ส่งคำสั่งเทเลพอร์ตไป " .. tostring(selectedMapName))
+end
+
+local function TryJoinSelectedDungeon()
+    if not autoDungeonEnabled or not selectedDungeonModeName then
+        return
+    end
+    if Omni.Data and Omni.Data.Gamemode then
+        return
+    end
+
+    local modes = GetUnlockedDungeonModes()
+    local selectedMode
+    for _, mode in ipairs(modes) do
+        if mode.Name == selectedDungeonModeName then
+            selectedMode = mode
+            break
+        end
+    end
+    if not selectedMode then
+        selectedDungeonModeName = modes[1] and modes[1].Name or nil
+        if not selectedDungeonModeName then
+            return
+        end
+        selectedMode = modes[1]
+    end
+
+    local now = os.clock()
+    if now - lastDungeonJoinAttempt < 8 then
+        return
+    end
+    lastDungeonJoinAttempt = now
+
+    local previewOk, preview = pcall(function()
+        return Omni.Signal:Invoke("General", "Gamemodes", "Preview", selectedDungeonModeName)
+    end)
+    if not previewOk then
+        warn("[WarpFarm] ตรวจสอบรอบดันเจี้ยนไม่สำเร็จ: " .. tostring(preview))
+        return
+    end
+    if typeof(preview) ~= "table"
+        or preview.GamemodeName ~= selectedDungeonModeName
+        or preview.Status ~= "Opened"
+        or typeof(preview.EntryClosesAt) ~= "number"
+        or workspace:GetServerTimeNow() >= preview.EntryClosesAt then
+        if lastDungeonStatusMessageAt == 0 or os.clock() - lastDungeonStatusMessageAt >= 30 then
+            lastDungeonStatusMessageAt = os.clock()
+            local status = typeof(preview) == "table" and preview.Status or "unavailable"
+            Log("🏰 รอรอบดันเจี้ยนเปิดรับ (" .. tostring(selectedMode.Difficulty) .. ", สถานะ: " .. tostring(status) .. ")")
+        end
+        return
+    end
+
+    local selectedInfo = Omni.Shared.Gamemodes.List[selectedDungeonModeName]
+    if not selectedInfo or not IsMapUnlocked(selectedInfo.MapName) then
+        warn("[WarpFarm] แมพของดันเจี้ยนนี้ยังไม่ปลดล็อก")
+        return
+    end
+
+    local joinOk, joined = pcall(function()
+        return Omni.Signal:Invoke("General", "Gamemodes", "Join", selectedDungeonModeName)
+    end)
+    if not joinOk then
+        warn("[WarpFarm] เข้าโหมดดันเจี้ยนไม่สำเร็จ: " .. tostring(joined))
+        return
+    end
+    if joined then
+        Log("🏰 กำลังเข้า Dungeon " .. tostring(selectedMode.Difficulty))
+    else
+        warn("[WarpFarm] เซิร์ฟเวอร์ยังไม่ให้เข้าดันเจี้ยน " .. tostring(selectedDungeonModeName))
+    end
+end
+
+-- ============================================================
+-- NOCLIP SYSTEM (กันตัวละครดีด / ชนมอน / ตกโลก)
+-- ============================================================
+if CFG.Noclip then
+    local originalCollision = setmetatable({}, { __mode = "k" })
+    RunService.Stepped:Connect(function()
+        local char = LP.Character
+        if char then
+            for _, part in char:GetChildren() do
+                if part:IsA("BasePart") then
+                    if farmEnabled then
+                        if originalCollision[part] == nil then
+                            originalCollision[part] = part.CanCollide
+                        end
+                        part.CanCollide = false
+                    elseif originalCollision[part] ~= nil then
+                        part.CanCollide = originalCollision[part]
+                        originalCollision[part] = nil
+                    end
+                end
+            end
+        end
+    end)
+end
+
+-- ============================================================
+-- HELPER FUNCTIONS
+-- ============================================================
+local function GetHRP()
+    local char = LP.Character
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function GetEquippedFighters()
+    local list = {}
+    if Omni.Data and Omni.Data.Fighters and Omni.Data.Fighters.Equipped then
+        for id, eq in pairs(Omni.Data.Fighters.Equipped) do
+            if eq == true then
+                table.insert(list, id)
+            end
+        end
+    end
+    return list
+end
+
+-- ============================================================
+-- ENEMY SCANNER & VALIDATION
+-- ============================================================
+-- ดึงข้อมูลมอนสเตอร์ทั้งหมดที่มีชีวิตในแมพปัจจุบัน
+local function GetAllLivingEnemies()
+    local currentMap = Omni.Data and Omni.Data.Maps and Omni.Data.Maps.Current
+    local enemies = {}
+    local seenIDs = {}
+
+    -- 1. ดึงจาก Omni Enemy Cache โดยตรง (แม่นยำที่สุด 100%)
+    pcall(function()
+        local cache = Omni.Cache and Omni.Cache:Get({ "Enemies" })
+        if cache and typeof(cache) == "table" then
+            for id, enemyObj in pairs(cache) do
+                if enemyObj and enemyObj.Data and enemyObj.Data.Health then
+                    local hp = enemyObj.Data.Health.Value
+                    local isDied = (enemyObj.Instance and enemyObj.Instance:GetAttribute("Died") == true)
+                    
+                    if hp > 0 and not isDied then
+                        local cf = nil
+                        if enemyObj.HRP then
+                            cf = enemyObj.HRP.CFrame
+                        elseif enemyObj.Data.CurrentPosition then
+                            cf = enemyObj.Data.CurrentPosition.Value
+                        elseif enemyObj.Instance and enemyObj.Instance:IsA("BasePart") then
+                            cf = enemyObj.Instance.CFrame
+                        end
+
+                        if cf then
+                            seenIDs[id] = true
+                            table.insert(enemies, {
+                                ID       = id,
+                                Name     = enemyObj.Name or id,
+                                Wrapper  = enemyObj,
+                                Instance = enemyObj.Instance,
+                                CFrame   = cf,
+                                Health   = hp,
+                                MaxHP    = (enemyObj.Data.MaxHealth and enemyObj.Data.MaxHealth.Value) or hp,
+                            })
+                        end
+                    end
+                end
+            end
+        end
+    end)
+
+    -- 2. Fallback: ดึงจาก CollectionService Tagged "Enemy"
+    if #enemies == 0 then
+        for _, part in CollectionService:GetTagged("Enemy") do
+            if part:IsA("BasePart") then
+                local id = part:GetAttribute("EnemyID") or part.Name
+                if not seenIDs[id] then
+                    local data = part:FindFirstChild("Data")
+                    local hpVal = data and data:FindFirstChild("Health")
+                    local isDied = part:GetAttribute("Died") == true
+
+                    if hpVal and hpVal.Value > 0 and not isDied then
+                        local mapName = part:GetAttribute("MapName")
+                        if not currentMap or not mapName or mapName == currentMap then
+                            seenIDs[id] = true
+                            table.insert(enemies, {
+                                ID       = id,
+                                Name     = part:GetAttribute("EnemyName") or part.Name,
+                                Instance = part,
+                                CFrame   = part.CFrame,
+                                Health   = hpVal.Value,
+                                MaxHP    = hpVal.Value,
+                            })
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- 3. Fallback: ดึงจาก workspace.Client.Enemies
+    if #enemies == 0 then
+        local clientEnemies = workspace:FindFirstChild("Client") and workspace.Client:FindFirstChild("Enemies")
+        if clientEnemies then
+            for _, model in clientEnemies:GetChildren() do
+                if model:IsA("Model") then
+                    local id = model:GetAttribute("EnemyID") or model.Name
+                    if not seenIDs[id] then
+                        local hrp = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+                        local hum = model:FindFirstChildWhichIsA("Humanoid")
+                        local isDied = model:GetAttribute("Died") == true
+
+                        if hrp and not isDied and (not hum or hum.Health > 0) then
+                            seenIDs[id] = true
+                            table.insert(enemies, {
+                                ID       = id,
+                                Name     = model.Name,
+                                Instance = model,
+                                CFrame   = hrp.CFrame,
+                                Health   = (hum and hum.Health) or 100,
+                                MaxHP    = (hum and hum.MaxHealth) or 100,
+                            })
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return enemies
+end
+
+-- หามอนตัวที่ใกล้ตำแหน่งเราที่สุด
+local function FindNearestEnemy(enemies)
+    local hrp = GetHRP()
+    if not hrp or #enemies == 0 then return nil end
+
+    local myPos = hrp.Position
+    local nearest = nil
+    local minDist = math.huge
+
+    for _, e in enemies do
+        local dist = (e.CFrame.Position - myPos).Magnitude
+        if dist < minDist then
+            minDist = dist
+            nearest = e
+        end
+    end
+
+    return nearest
+end
+
+-- ============================================================
+-- ATTACK EXECUTION
+-- ============================================================
+local lastFighterOrderTarget
+local lastFighterOrderAt = 0
+
+local function Attack(target)
+    if not farmEnabled or not target then return end
+
+    if target.ID then
+        local fighters
+        local playerStats = Omni.Utils and Omni.Utils.PlayerStats
+
+        if playerStats and playerStats.GetAvailableFightersForTarget then
+            local availableOk, availableResult = pcall(function()
+                return playerStats.GetAvailableFightersForTarget(target.ID, Omni.Data, LP)
+            end)
+            if availableOk and typeof(availableResult) == "table" then
+                fighters = availableResult
+            elseif not availableOk then
+                warn("[WarpFarm] ตรวจสอบนักสู้ที่พร้อมโจมตีไม่สำเร็จ: " .. tostring(availableResult))
+            end
+        else
+            fighters = GetEquippedFighters()
+        end
+
+        local now = os.clock()
+        if fighters and #fighters > 0
+            and (target.ID ~= lastFighterOrderTarget or now - lastFighterOrderAt >= 1) then
+            local attackOk, attackError = pcall(function()
+                Omni.Signal:Invoke("General", "Combat", "FighterAttack", target.ID, fighters)
+            end)
+            if attackOk then
+                lastFighterOrderTarget = target.ID
+                lastFighterOrderAt = now
+            else
+                warn("[WarpFarm] ส่งนักสู้ไปโจมตีไม่สำเร็จ: " .. tostring(attackError))
+            end
+        end
+    end
+
+    -- 2. ปล่อย Weapon Skill อัตโนมัติ
+    if CFG.AutoSkill then
+        pcall(function()
+            Omni.Signal:Fire("General", "Combat", "WeaponSkill")
+        end)
+    end
+
+    -- 3. ยิง ClickDetector ถ้ามี
+    pcall(function()
+        if fireclickdetector and target.Instance then
+            local cd = target.Instance:FindFirstChildWhichIsA("ClickDetector")
+                or target.Instance:FindFirstChild("ClickDetector", true)
+            if cd then
+                fireclickdetector(cd)
+            end
+        end
+    end)
+end
+
+-- ============================================================
+-- MAIN AUTO WARP FARM LOOP
+-- ============================================================
+local playerGui = LP:WaitForChild("PlayerGui")
+for _, guiName in { "WarpFarmUI", "ProAnimeLegarz" } do
+    local existingGui = playerGui:FindFirstChild(guiName)
+    if existingGui then
+        existingGui:Destroy()
+    end
+end
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "ProAnimeLegarz"
+screenGui.ResetOnSpawn = false
+screenGui.DisplayOrder = 10
+screenGui.Parent = playerGui
+
+local panel = Instance.new("Frame")
+panel.Name = "Panel"
+panel.AnchorPoint = Vector2.new(0.5, 0)
+panel.Position = UDim2.new(0.5, 0, 0, 24)
+panel.Size = UDim2.fromOffset(820, 560)
+panel.BackgroundColor3 = Color3.fromRGB(20, 19, 16)
+panel.BackgroundTransparency = 0.18
+panel.BorderSizePixel = 0
+panel.Parent = screenGui
+
+local panelCorner = Instance.new("UICorner")
+panelCorner.CornerRadius = UDim.new(0, 5)
+panelCorner.Parent = panel
+
+local title = Instance.new("TextLabel")
+title.Name = "Title"
+title.BackgroundTransparency = 1
+title.Position = UDim2.fromOffset(14, 2)
+title.Size = UDim2.new(1, -150, 0, 32)
+title.Font = Enum.Font.FredokaOne
+title.Text = "⌄  Pro Anime Legarz"
+title.TextColor3 = Color3.fromRGB(235, 242, 245)
+title.TextSize = 24
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Active = true
+title.Parent = panel
+
+local contentFrame = Instance.new("Frame")
+contentFrame.Name = "Features"
+contentFrame.Position = UDim2.fromOffset(0, 38)
+contentFrame.Size = UDim2.new(1, 0, 1, -68)
+contentFrame.BackgroundTransparency = 1
+contentFrame.BorderSizePixel = 0
+contentFrame.Parent = panel
+
+local visibilityHint = Instance.new("TextLabel")
+visibilityHint.Name = "VisibilityHint"
+visibilityHint.AnchorPoint = Vector2.new(0.5, 1)
+visibilityHint.Position = UDim2.new(0.5, 0, 1, -5)
+visibilityHint.Size = UDim2.new(1, -20, 0, 20)
+visibilityHint.BackgroundTransparency = 1
+visibilityHint.Font = Enum.Font.GothamMedium
+visibilityHint.Text = "กด L หรือปุ่มบนหน้าจอเพื่อเปิด/ซ่อน UI"
+visibilityHint.TextColor3 = Color3.fromRGB(175, 168, 145)
+visibilityHint.TextSize = 13
+visibilityHint.TextXAlignment = Enum.TextXAlignment.Center
+visibilityHint.Parent = panel
+
+local themes = {
+    {
+        Name = "GOLD",
+        Accent = Color3.fromRGB(210, 170, 65),
+        Panel = Color3.fromRGB(20, 19, 16),
+        Card = Color3.fromRGB(16, 15, 13)
+    },
+    {
+        Name = "CYAN",
+        Accent = Color3.fromRGB(45, 190, 210),
+        Panel = Color3.fromRGB(13, 20, 23),
+        Card = Color3.fromRGB(12, 26, 29)
+    },
+    {
+        Name = "VIOLET",
+        Accent = Color3.fromRGB(165, 105, 225),
+        Panel = Color3.fromRGB(19, 15, 25),
+        Card = Color3.fromRGB(27, 20, 36)
+    }
+}
+local activeThemeIndex = 1
+local themeButton = Instance.new("TextButton")
+themeButton.Name = "ThemeSelector"
+themeButton.AnchorPoint = Vector2.new(1, 0)
+themeButton.Position = UDim2.new(1, -10, 0, 4)
+themeButton.Size = UDim2.fromOffset(102, 30)
+themeButton.BackgroundColor3 = Color3.fromRGB(16, 15, 13)
+themeButton.BorderSizePixel = 0
+themeButton.Font = Enum.Font.GothamBold
+themeButton.TextSize = 12
+themeButton.TextColor3 = Color3.fromRGB(245, 245, 245)
+themeButton.Text = themes[activeThemeIndex].Name
+themeButton.Parent = panel
+
+local themeButtonStroke = Instance.new("UIStroke")
+themeButtonStroke.Thickness = 1
+themeButtonStroke.Parent = themeButton
+
+local UpdateCategoryNavigation
+local uiToggleButton
+local function ApplyTheme()
+    local theme = themes[activeThemeIndex]
+    local accent = theme.Accent
+    themeButton.Text = themes[activeThemeIndex].Name
+    themeButtonStroke.Color = accent
+    title.TextColor3 = accent
+    visibilityHint.TextColor3 = accent
+    panel.BackgroundColor3 = theme.Panel
+    themeButton.BackgroundColor3 = theme.Card
+
+    for _, object in ipairs(screenGui:GetDescendants()) do
+        if object:IsA("UIStroke") then
+            object.Color = accent
+        elseif object:IsA("TextLabel") and object.Name:find("Section") then
+            object.TextColor3 = accent
+        elseif object:IsA("TextButton") then
+            object.BackgroundColor3 = theme.Card
+        end
+    end
+
+    if uiToggleButton then
+        uiToggleButton.BackgroundColor3 = accent
+        uiToggleButton.TextColor3 = Color3.fromRGB(20, 20, 20)
+    end
+
+    if UpdateCategoryNavigation then
+        UpdateCategoryNavigation()
+    end
+end
+
+themeButton.Activated:Connect(function()
+    activeThemeIndex = activeThemeIndex % #themes + 1
+    ApplyTheme()
+end)
+
+uiToggleButton = Instance.new("TextButton")
+uiToggleButton.Name = "FloatingUIToggle"
+uiToggleButton.AnchorPoint = Vector2.new(1, 1)
+uiToggleButton.Position = UDim2.new(1, -18, 1, -18)
+uiToggleButton.Size = UDim2.fromOffset(104, 48)
+uiToggleButton.ZIndex = 100
+uiToggleButton.BackgroundColor3 = themes[activeThemeIndex].Accent
+uiToggleButton.BorderSizePixel = 0
+uiToggleButton.Font = Enum.Font.GothamBold
+uiToggleButton.Text = "ซ่อน UI"
+uiToggleButton.TextColor3 = Color3.fromRGB(20, 20, 20)
+uiToggleButton.TextSize = 16
+uiToggleButton.Parent = screenGui
+
+local uiToggleCorner = Instance.new("UICorner")
+uiToggleCorner.CornerRadius = UDim.new(0, 14)
+uiToggleCorner.Parent = uiToggleButton
+
+local uiToggleStroke = Instance.new("UIStroke")
+uiToggleStroke.Thickness = 2
+uiToggleStroke.Parent = uiToggleButton
+
+local function SetPanelVisible(visible)
+    panel.Visible = visible
+    uiToggleButton.Text = visible and "ซ่อน UI" or "เปิด UI"
+end
+
+uiToggleButton.Activated:Connect(function()
+    SetPanelVisible(not panel.Visible)
+end)
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if not gameProcessed and input.KeyCode == Enum.KeyCode.L then
+        SetPanelVisible(not panel.Visible)
+    end
+end)
+
+local function CreateSectionHeader(name, text, yPosition)
+    local header = Instance.new("TextLabel")
+    header.Name = name
+    header.BackgroundTransparency = 1
+    header.Position = UDim2.fromOffset(12, yPosition)
+    header.Size = UDim2.new(1, -24, 0, 15)
+    header.Font = Enum.Font.FredokaOne
+    header.Text = text
+    header.TextColor3 = Color3.fromRGB(175, 168, 145)
+    header.TextSize = 13
+    header.TextXAlignment = Enum.TextXAlignment.Left
+    header.Parent = contentFrame
+    return header
+end
+
+CreateSectionHeader("FarmSection", "COMBAT", 0)
+CreateSectionHeader("TeamSection", "TEAM", 88)
+CreateSectionHeader("ProgressSection", "REWARDS & PROGRESSION", 176)
+CreateSectionHeader("TravelSection", "TRAVEL", 608)
+
+local dragging = false
+local dragInput
+local dragStart
+local panelStart
+
+title.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        panelStart = panel.Position
+
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+title.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and input == dragInput then
+        local delta = input.Position - dragStart
+        panel.Position = UDim2.new(
+            panelStart.X.Scale,
+            panelStart.X.Offset + delta.X,
+            panelStart.Y.Scale,
+            panelStart.Y.Offset + delta.Y
+        )
+    end
+end)
+
+farmButton = Instance.new("TextButton")
+farmButton.Name = "ToggleFarm"
+farmButton.Position = UDim2.fromOffset(9, 18)
+farmButton.Size = UDim2.new(1, -18, 0, 64)
+farmButton.BackgroundColor3 = Color3.fromRGB(16, 15, 13)
+farmButton.BackgroundTransparency = 0.08
+farmButton.Text = ""
+farmButton.AutoButtonColor = true
+farmButton.BorderSizePixel = 0
+farmButton.Parent = contentFrame
+
+local buttonCorner = Instance.new("UICorner")
+buttonCorner.CornerRadius = UDim.new(0, 4)
+buttonCorner.Parent = farmButton
+
+local rowStroke = Instance.new("UIStroke")
+rowStroke.Color = Color3.fromRGB(105, 91, 59)
+rowStroke.Thickness = 1
+rowStroke.Parent = farmButton
+
+local farmLabel = Instance.new("TextLabel")
+farmLabel.Name = "FarmLabel"
+farmLabel.BackgroundTransparency = 1
+farmLabel.Position = UDim2.fromOffset(12, 7)
+farmLabel.Size = UDim2.new(1, -120, 0, 26)
+farmLabel.Font = Enum.Font.GothamBold
+farmLabel.Text = "Auto Warp Farm"
+farmLabel.TextColor3 = Color3.fromRGB(245, 245, 245)
+farmLabel.TextSize = 19
+farmLabel.TextXAlignment = Enum.TextXAlignment.Left
+farmLabel.Parent = farmButton
+
+local farmDescription = Instance.new("TextLabel")
+farmDescription.Name = "Description"
+farmDescription.BackgroundTransparency = 1
+farmDescription.Position = UDim2.fromOffset(12, 34)
+farmDescription.Size = UDim2.new(1, -120, 0, 22)
+farmDescription.Font = Enum.Font.Gotham
+farmDescription.Text = "วาปไปหามอน ตีจนตาย แล้วไปตัวถัดไป"
+farmDescription.TextColor3 = Color3.fromRGB(190, 185, 172)
+farmDescription.TextSize = 13
+farmDescription.TextXAlignment = Enum.TextXAlignment.Left
+farmDescription.Parent = farmButton
+
+farmToggleTrack = Instance.new("Frame")
+farmToggleTrack.Name = "ToggleTrack"
+farmToggleTrack.AnchorPoint = Vector2.new(1, 0.5)
+farmToggleTrack.Position = UDim2.new(1, -9, 0.5, 0)
+farmToggleTrack.Size = UDim2.fromOffset(66, 34)
+farmToggleTrack.BackgroundColor3 = Color3.fromRGB(40, 205, 55)
+farmToggleTrack.BorderSizePixel = 0
+farmToggleTrack.Parent = farmButton
+
+local trackCorner = Instance.new("UICorner")
+trackCorner.CornerRadius = UDim.new(0, 3)
+trackCorner.Parent = farmToggleTrack
+
+farmToggleKnob = Instance.new("Frame")
+farmToggleKnob.Name = "ToggleKnob"
+farmToggleKnob.Position = UDim2.new(1, -27, 0.5, -12)
+farmToggleKnob.Size = UDim2.fromOffset(24, 24)
+farmToggleKnob.BackgroundColor3 = Color3.fromRGB(248, 248, 248)
+farmToggleKnob.BorderSizePixel = 0
+farmToggleKnob.Parent = farmToggleTrack
+
+local knobCorner = Instance.new("UICorner")
+knobCorner.CornerRadius = UDim.new(0, 2)
+knobCorner.Parent = farmToggleKnob
+
+farmButton.Activated:Connect(function()
+    SetFarmEnabled(not farmEnabled)
+end)
+
+autoEquipButton = Instance.new("TextButton")
+autoEquipButton.Name = "ToggleAutoEquipBest"
+autoEquipButton.Position = UDim2.fromOffset(9, 106)
+autoEquipButton.Size = UDim2.new(1, -18, 0, 64)
+autoEquipButton.BackgroundColor3 = Color3.fromRGB(16, 15, 13)
+autoEquipButton.BackgroundTransparency = 0.08
+autoEquipButton.Text = ""
+autoEquipButton.AutoButtonColor = true
+autoEquipButton.BorderSizePixel = 0
+autoEquipButton.Parent = contentFrame
+
+local autoEquipButtonCorner = Instance.new("UICorner")
+autoEquipButtonCorner.CornerRadius = UDim.new(0, 4)
+autoEquipButtonCorner.Parent = autoEquipButton
+
+local autoEquipRowStroke = Instance.new("UIStroke")
+autoEquipRowStroke.Color = Color3.fromRGB(105, 91, 59)
+autoEquipRowStroke.Thickness = 1
+autoEquipRowStroke.Parent = autoEquipButton
+
+local autoEquipLabel = Instance.new("TextLabel")
+autoEquipLabel.Name = "AutoEquipLabel"
+autoEquipLabel.BackgroundTransparency = 1
+autoEquipLabel.Position = UDim2.fromOffset(12, 7)
+autoEquipLabel.Size = UDim2.new(1, -120, 0, 26)
+autoEquipLabel.Font = Enum.Font.GothamBold
+autoEquipLabel.Text = "Auto Equip Best"
+autoEquipLabel.TextColor3 = Color3.fromRGB(245, 245, 245)
+autoEquipLabel.TextSize = 19
+autoEquipLabel.TextXAlignment = Enum.TextXAlignment.Left
+autoEquipLabel.Parent = autoEquipButton
+
+local autoEquipDescription = Instance.new("TextLabel")
+autoEquipDescription.Name = "Description"
+autoEquipDescription.BackgroundTransparency = 1
+autoEquipDescription.Position = UDim2.fromOffset(12, 34)
+autoEquipDescription.Size = UDim2.new(1, -120, 0, 22)
+autoEquipDescription.Font = Enum.Font.Gotham
+autoEquipDescription.Text = "ใส่นักสู้ที่เก่งที่สุดให้อัตโนมัติ"
+autoEquipDescription.TextColor3 = Color3.fromRGB(190, 185, 172)
+autoEquipDescription.TextSize = 13
+autoEquipDescription.TextXAlignment = Enum.TextXAlignment.Left
+autoEquipDescription.Parent = autoEquipButton
+
+autoEquipToggleTrack = Instance.new("Frame")
+autoEquipToggleTrack.Name = "ToggleTrack"
+autoEquipToggleTrack.AnchorPoint = Vector2.new(1, 0.5)
+autoEquipToggleTrack.Position = UDim2.new(1, -9, 0.5, 0)
+autoEquipToggleTrack.Size = UDim2.fromOffset(66, 34)
+autoEquipToggleTrack.BackgroundColor3 = Color3.fromRGB(40, 205, 55)
+autoEquipToggleTrack.BorderSizePixel = 0
+autoEquipToggleTrack.Parent = autoEquipButton
+
+local autoEquipTrackCorner = Instance.new("UICorner")
+autoEquipTrackCorner.CornerRadius = UDim.new(0, 3)
+autoEquipTrackCorner.Parent = autoEquipToggleTrack
+
+autoEquipToggleKnob = Instance.new("Frame")
+autoEquipToggleKnob.Name = "ToggleKnob"
+autoEquipToggleKnob.Position = UDim2.new(1, -27, 0.5, -12)
+autoEquipToggleKnob.Size = UDim2.fromOffset(24, 24)
+autoEquipToggleKnob.BackgroundColor3 = Color3.fromRGB(248, 248, 248)
+autoEquipToggleKnob.BorderSizePixel = 0
+autoEquipToggleKnob.Parent = autoEquipToggleTrack
+
+local autoEquipKnobCorner = Instance.new("UICorner")
+autoEquipKnobCorner.CornerRadius = UDim.new(0, 2)
+autoEquipKnobCorner.Parent = autoEquipToggleKnob
+
+autoEquipButton.Activated:Connect(function()
+    SetAutoEquipEnabled(not autoEquipEnabled)
+end)
+
+autoClaimAchievementsButton = Instance.new("TextButton")
+autoClaimAchievementsButton.Name = "ToggleAutoClaimAchievements"
+autoClaimAchievementsButton.Position = UDim2.fromOffset(9, 194)
+autoClaimAchievementsButton.Size = UDim2.new(1, -18, 0, 64)
+autoClaimAchievementsButton.BackgroundColor3 = Color3.fromRGB(16, 15, 13)
+autoClaimAchievementsButton.BackgroundTransparency = 0.08
+autoClaimAchievementsButton.Text = ""
+autoClaimAchievementsButton.AutoButtonColor = true
+autoClaimAchievementsButton.BorderSizePixel = 0
+autoClaimAchievementsButton.Parent = contentFrame
+
+local autoClaimAchievementsButtonCorner = Instance.new("UICorner")
+autoClaimAchievementsButtonCorner.CornerRadius = UDim.new(0, 4)
+autoClaimAchievementsButtonCorner.Parent = autoClaimAchievementsButton
+
+local autoClaimAchievementsRowStroke = Instance.new("UIStroke")
+autoClaimAchievementsRowStroke.Color = Color3.fromRGB(105, 91, 59)
+autoClaimAchievementsRowStroke.Thickness = 1
+autoClaimAchievementsRowStroke.Parent = autoClaimAchievementsButton
+
+local autoClaimAchievementsLabel = Instance.new("TextLabel")
+autoClaimAchievementsLabel.Name = "AutoClaimAchievementsLabel"
+autoClaimAchievementsLabel.BackgroundTransparency = 1
+autoClaimAchievementsLabel.Position = UDim2.fromOffset(12, 7)
+autoClaimAchievementsLabel.Size = UDim2.new(1, -120, 0, 26)
+autoClaimAchievementsLabel.Font = Enum.Font.GothamBold
+autoClaimAchievementsLabel.Text = "Auto Claim Achievements"
+autoClaimAchievementsLabel.TextColor3 = Color3.fromRGB(245, 245, 245)
+autoClaimAchievementsLabel.TextSize = 19
+autoClaimAchievementsLabel.TextXAlignment = Enum.TextXAlignment.Left
+autoClaimAchievementsLabel.Parent = autoClaimAchievementsButton
+
+local autoClaimAchievementsDescription = Instance.new("TextLabel")
+autoClaimAchievementsDescription.Name = "Description"
+autoClaimAchievementsDescription.BackgroundTransparency = 1
+autoClaimAchievementsDescription.Position = UDim2.fromOffset(12, 34)
+autoClaimAchievementsDescription.Size = UDim2.new(1, -120, 0, 22)
+autoClaimAchievementsDescription.Font = Enum.Font.Gotham
+autoClaimAchievementsDescription.Text = "รับความสำเร็จที่ทำเสร็จแล้วอัตโนมัติ"
+autoClaimAchievementsDescription.TextColor3 = Color3.fromRGB(190, 185, 172)
+autoClaimAchievementsDescription.TextSize = 13
+autoClaimAchievementsDescription.TextXAlignment = Enum.TextXAlignment.Left
+autoClaimAchievementsDescription.Parent = autoClaimAchievementsButton
+
+autoClaimAchievementsToggleTrack = Instance.new("Frame")
+autoClaimAchievementsToggleTrack.Name = "ToggleTrack"
+autoClaimAchievementsToggleTrack.AnchorPoint = Vector2.new(1, 0.5)
+autoClaimAchievementsToggleTrack.Position = UDim2.new(1, -9, 0.5, 0)
+autoClaimAchievementsToggleTrack.Size = UDim2.fromOffset(66, 34)
+autoClaimAchievementsToggleTrack.BackgroundColor3 = Color3.fromRGB(40, 205, 55)
+autoClaimAchievementsToggleTrack.BorderSizePixel = 0
+autoClaimAchievementsToggleTrack.Parent = autoClaimAchievementsButton
+
+local autoClaimAchievementsTrackCorner = Instance.new("UICorner")
+autoClaimAchievementsTrackCorner.CornerRadius = UDim.new(0, 3)
+autoClaimAchievementsTrackCorner.Parent = autoClaimAchievementsToggleTrack
+
+autoClaimAchievementsToggleKnob = Instance.new("Frame")
+autoClaimAchievementsToggleKnob.Name = "ToggleKnob"
+autoClaimAchievementsToggleKnob.Position = UDim2.new(1, -27, 0.5, -12)
+autoClaimAchievementsToggleKnob.Size = UDim2.fromOffset(24, 24)
+autoClaimAchievementsToggleKnob.BackgroundColor3 = Color3.fromRGB(248, 248, 248)
+autoClaimAchievementsToggleKnob.BorderSizePixel = 0
+autoClaimAchievementsToggleKnob.Parent = autoClaimAchievementsToggleTrack
+
+local autoClaimAchievementsKnobCorner = Instance.new("UICorner")
+autoClaimAchievementsKnobCorner.CornerRadius = UDim.new(0, 2)
+autoClaimAchievementsKnobCorner.Parent = autoClaimAchievementsToggleKnob
+
+autoClaimAchievementsButton.Activated:Connect(function()
+    SetAutoClaimAchievementsEnabled(not autoClaimAchievementsEnabled)
+end)
+
+autoQuestsButton = Instance.new("TextButton")
+autoQuestsButton.Name = "ToggleAutoQuests"
+autoQuestsButton.Position = UDim2.fromOffset(9, 264)
+autoQuestsButton.Size = UDim2.new(1, -18, 0, 64)
+autoQuestsButton.BackgroundColor3 = Color3.fromRGB(16, 15, 13)
+autoQuestsButton.BackgroundTransparency = 0.08
+autoQuestsButton.Text = ""
+autoQuestsButton.AutoButtonColor = true
+autoQuestsButton.BorderSizePixel = 0
+autoQuestsButton.Parent = contentFrame
+
+local autoQuestsButtonCorner = Instance.new("UICorner")
+autoQuestsButtonCorner.CornerRadius = UDim.new(0, 4)
+autoQuestsButtonCorner.Parent = autoQuestsButton
+
+local autoQuestsRowStroke = Instance.new("UIStroke")
+autoQuestsRowStroke.Color = Color3.fromRGB(105, 91, 59)
+autoQuestsRowStroke.Thickness = 1
+autoQuestsRowStroke.Parent = autoQuestsButton
+
+local autoQuestsLabel = Instance.new("TextLabel")
+autoQuestsLabel.Name = "AutoQuestsLabel"
+autoQuestsLabel.BackgroundTransparency = 1
+autoQuestsLabel.Position = UDim2.fromOffset(12, 7)
+autoQuestsLabel.Size = UDim2.new(1, -120, 0, 26)
+autoQuestsLabel.Font = Enum.Font.GothamBold
+autoQuestsLabel.Text = "Auto Quests"
+autoQuestsLabel.TextColor3 = Color3.fromRGB(245, 245, 245)
+autoQuestsLabel.TextSize = 19
+autoQuestsLabel.TextXAlignment = Enum.TextXAlignment.Left
+autoQuestsLabel.Parent = autoQuestsButton
+
+local autoQuestsDescription = Instance.new("TextLabel")
+autoQuestsDescription.Name = "Description"
+autoQuestsDescription.BackgroundTransparency = 1
+autoQuestsDescription.Position = UDim2.fromOffset(12, 34)
+autoQuestsDescription.Size = UDim2.new(1, -120, 0, 22)
+autoQuestsDescription.Font = Enum.Font.Gotham
+autoQuestsDescription.Text = "รับรางวัลเควสที่ทำเสร็จแล้วอัตโนมัติ"
+autoQuestsDescription.TextColor3 = Color3.fromRGB(190, 185, 172)
+autoQuestsDescription.TextSize = 13
+autoQuestsDescription.TextXAlignment = Enum.TextXAlignment.Left
+autoQuestsDescription.Parent = autoQuestsButton
+
+autoQuestsToggleTrack = Instance.new("Frame")
+autoQuestsToggleTrack.Name = "ToggleTrack"
+autoQuestsToggleTrack.AnchorPoint = Vector2.new(1, 0.5)
+autoQuestsToggleTrack.Position = UDim2.new(1, -9, 0.5, 0)
+autoQuestsToggleTrack.Size = UDim2.fromOffset(66, 34)
+autoQuestsToggleTrack.BackgroundColor3 = Color3.fromRGB(40, 205, 55)
+autoQuestsToggleTrack.BorderSizePixel = 0
+autoQuestsToggleTrack.Parent = autoQuestsButton
+
+local autoQuestsTrackCorner = Instance.new("UICorner")
+autoQuestsTrackCorner.CornerRadius = UDim.new(0, 3)
+autoQuestsTrackCorner.Parent = autoQuestsToggleTrack
+
+autoQuestsToggleKnob = Instance.new("Frame")
+autoQuestsToggleKnob.Name = "ToggleKnob"
+autoQuestsToggleKnob.Position = UDim2.new(1, -27, 0.5, -12)
+autoQuestsToggleKnob.Size = UDim2.fromOffset(24, 24)
+autoQuestsToggleKnob.BackgroundColor3 = Color3.fromRGB(248, 248, 248)
+autoQuestsToggleKnob.BorderSizePixel = 0
+autoQuestsToggleKnob.Parent = autoQuestsToggleTrack
+
+local autoQuestsKnobCorner = Instance.new("UICorner")
+autoQuestsKnobCorner.CornerRadius = UDim.new(0, 2)
+autoQuestsKnobCorner.Parent = autoQuestsToggleKnob
+
+autoQuestsButton.Activated:Connect(function()
+    SetAutoQuestsEnabled(not autoQuestsEnabled)
+end)
+
+local function CreateToggleRow(name, labelText, descriptionText, yPosition, initialValue, onToggle)
+    local button = Instance.new("TextButton")
+    button.Name = name
+    button.Position = UDim2.fromOffset(9, yPosition)
+    button.Size = UDim2.new(1, -18, 0, 64)
+    button.BackgroundColor3 = Color3.fromRGB(16, 15, 13)
+    button.BackgroundTransparency = 0.08
+    button.Text = ""
+    button.BorderSizePixel = 0
+    button.Parent = contentFrame
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 4)
+    corner.Parent = button
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Thickness = 1
+    stroke.Parent = button
+
+    local label = Instance.new("TextLabel")
+    label.Name = "Label"
+    label.BackgroundTransparency = 1
+    label.Position = UDim2.fromOffset(12, 7)
+    label.Size = UDim2.new(1, -120, 0, 26)
+    label.Font = Enum.Font.GothamBold
+    label.Text = labelText
+    label.TextColor3 = Color3.fromRGB(245, 245, 245)
+    label.TextSize = 19
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = button
+
+    local description = Instance.new("TextLabel")
+    description.Name = "Description"
+    description.BackgroundTransparency = 1
+    description.Position = UDim2.fromOffset(12, 34)
+    description.Size = UDim2.new(1, -120, 0, 22)
+    description.Font = Enum.Font.GothamMedium
+    description.Text = descriptionText
+    description.TextColor3 = Color3.fromRGB(190, 185, 172)
+    description.TextSize = 13
+    description.TextXAlignment = Enum.TextXAlignment.Left
+    description.Parent = button
+
+    local track = Instance.new("Frame")
+    track.Name = "ToggleTrack"
+    track.AnchorPoint = Vector2.new(1, 0.5)
+    track.Position = UDim2.new(1, -9, 0.5, 0)
+    track.Size = UDim2.fromOffset(66, 34)
+    track.BorderSizePixel = 0
+    track.Parent = button
+
+    local trackCorner = Instance.new("UICorner")
+    trackCorner.CornerRadius = UDim.new(0, 3)
+    trackCorner.Parent = track
+
+    local knob = Instance.new("Frame")
+    knob.Name = "ToggleKnob"
+    knob.Size = UDim2.fromOffset(24, 24)
+    knob.BackgroundColor3 = Color3.fromRGB(248, 248, 248)
+    knob.BorderSizePixel = 0
+    knob.Parent = track
+
+    local knobCorner = Instance.new("UICorner")
+    knobCorner.CornerRadius = UDim.new(0, 2)
+    knobCorner.Parent = knob
+
+    local enabled = initialValue
+    local function update()
+        track.BackgroundColor3 = enabled and Color3.fromRGB(40, 205, 55) or Color3.fromRGB(35, 38, 40)
+        knob.Position = enabled and UDim2.new(1, -27, 0.5, -12) or UDim2.new(0, 3, 0.5, -12)
+    end
+
+    button.Activated:Connect(function()
+        enabled = not enabled
+        update()
+        local accepted = onToggle(enabled)
+        if accepted == false then
+            enabled = not enabled
+            update()
+        end
+    end)
+
+    update()
+    return button
+end
+
+local function CreateActionButton(name, text, position, size, callback)
+    local button = Instance.new("TextButton")
+    button.Name = name
+    button.Position = position
+    button.Size = size
+    button.BackgroundColor3 = Color3.fromRGB(16, 15, 13)
+    button.TextColor3 = Color3.fromRGB(245, 245, 245)
+    button.TextSize = 14
+    button.Font = Enum.Font.GothamBold
+    button.TextWrapped = true
+    button.Text = text
+    button.BorderSizePixel = 0
+    button.Parent = contentFrame
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 4)
+    corner.Parent = button
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Thickness = 1
+    stroke.Parent = button
+
+    button.Activated:Connect(callback)
+    return button
+end
+
+local function CreateDropdown(name, yPosition, selectorSize, getOptions, getSelectedName, onSelected)
+    local selector = CreateActionButton(
+        name,
+        "",
+        UDim2.fromOffset(9, yPosition),
+        selectorSize,
+        function() end
+    )
+    selector.ZIndex = 5
+
+    local menu = Instance.new("ScrollingFrame")
+    menu.Name = name .. "Options"
+    menu.Position = UDim2.fromOffset(9, yPosition + 44)
+    menu.Size = UDim2.new(selectorSize.X.Scale, selectorSize.X.Offset, 0, 0)
+    menu.BackgroundColor3 = Color3.fromRGB(16, 15, 13)
+    menu.BorderSizePixel = 0
+    menu.ScrollBarThickness = 4
+    menu.CanvasSize = UDim2.fromOffset(0, 0)
+    menu.Visible = false
+    menu.ZIndex = 20
+    menu.Parent = contentFrame
+
+    local menuCorner = Instance.new("UICorner")
+    menuCorner.CornerRadius = UDim.new(0, 4)
+    menuCorner.Parent = menu
+
+    local menuStroke = Instance.new("UIStroke")
+    menuStroke.Thickness = 1
+    menuStroke.Parent = menu
+
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, 2)
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Parent = menu
+
+    local function RefreshSelector()
+        local selectedName = getSelectedName()
+        selector.Text = tostring(selectedName or "No available options") .. "  ▾"
+        selector.Active = selectedName ~= nil
+        selector.AutoButtonColor = selectedName ~= nil
+    end
+
+    selector.Activated:Connect(function()
+        if menu.Visible then
+            menu.Visible = false
+            return
+        end
+
+        for _, child in ipairs(menu:GetChildren()) do
+            if child:IsA("TextButton") then
+                child:Destroy()
+            end
+        end
+
+        local options = getOptions()
+        if #options == 0 then
+            RefreshSelector()
+            return
+        end
+
+        local optionHeight = 30
+        menu.Size = UDim2.new(
+            selectorSize.X.Scale,
+            selectorSize.X.Offset,
+            0,
+            math.min(#options * (optionHeight + 2), 126)
+        )
+        menu.CanvasSize = UDim2.fromOffset(0, #options * (optionHeight + 2))
+        for index, option in ipairs(options) do
+            local optionButton = Instance.new("TextButton")
+            optionButton.Name = "Option" .. index
+            optionButton.Size = UDim2.new(1, -6, 0, optionHeight)
+            optionButton.BackgroundColor3 = Color3.fromRGB(16, 15, 13)
+            optionButton.BorderSizePixel = 0
+            optionButton.Font = Enum.Font.GothamMedium
+            optionButton.TextColor3 = Color3.fromRGB(245, 245, 245)
+            optionButton.TextSize = 14
+            optionButton.TextXAlignment = Enum.TextXAlignment.Left
+            optionButton.Text = "  " .. tostring(option.Label)
+            optionButton.LayoutOrder = index
+            optionButton.ZIndex = 21
+            optionButton.Parent = menu
+            optionButton.Activated:Connect(function()
+                onSelected(option)
+                RefreshSelector()
+                menu.Visible = false
+            end)
+        end
+        menu.Visible = true
+    end)
+
+    RefreshSelector()
+    return selector, RefreshSelector
+end
+
+CreateToggleRow(
+    "ToggleAutoLevel",
+    "Auto Level Stat",
+    "ใช้แต้มเลเวลทั้งหมดกับค่าสเตตัสที่เลือก",
+    474,
+    autoLevelEnabled,
+    SetAutoLevelEnabled
+)
+CreateToggleRow(
+    "ToggleAutoDailyRewards",
+    "Auto Daily Rewards",
+    "รับรางวัลรายวันที่ปลดล็อกแล้ว",
+    334,
+    autoDailyRewardsEnabled,
+    SetAutoDailyRewardsEnabled
+)
+CreateToggleRow(
+    "ToggleAutoTimeRewards",
+    "Auto Time Rewards",
+    "เปิดระบบเกมให้รับรางวัลเวลาเมื่อพร้อม",
+    404,
+    autoTimeRewardsEnabled,
+    SetAutoTimeRewardsEnabled
+)
+
+local levelStats = {
+    { Name = "Fighter Damage", Label = "Damage" },
+    { Name = "Yen", Label = "Yen" },
+    { Name = "Luck", Label = "Luck" },
+    { Name = "Drops", Label = "Drop" }
+}
+local selectedStatIndex = 1
+local levelStatButton
+local function UpdateLevelStatButton()
+    levelStatButton.Text = "Upgrade stat: " .. levelStats[selectedStatIndex].Label
+end
+
+levelStatButton = CreateActionButton(
+    "SelectLevelStat",
+    "",
+    UDim2.fromOffset(9, 544),
+    UDim2.new(1, -18, 0, 48),
+    function()
+        selectedStatIndex = selectedStatIndex % #levelStats + 1
+        selectedLevelStat = levelStats[selectedStatIndex].Name
+        lastAutoUpgradeKey = nil
+        UpdateLevelStatButton()
+    end
+)
+UpdateLevelStatButton()
+
+autoEquipLabel.Text = "Auto Equip Best"
+autoEquipDescription.Text = "ใส่นักสู้และอาวุธที่ดีที่สุดให้อัตโนมัติ"
+
+local availableMaps = GetOwnedMaps()
+for _, map in ipairs(availableMaps) do
+    if map.Name == (Omni.Data.Maps and Omni.Data.Maps.Current) then
+        selectedMapName = map.Name
+        break
+    end
+end
+if not selectedMapName and availableMaps[1] then
+    selectedMapName = availableMaps[1].Name
+end
+
+CreateDropdown(
+    "SelectTeleportMap",
+    626,
+    UDim2.new(1, -156, 0, 42),
+    function()
+        local options = {}
+        for _, map in ipairs(GetOwnedMaps()) do
+            table.insert(options, { Name = map.Name, Label = map.Name })
+        end
+        return options
+    end,
+    function()
+        return "Destination: " .. tostring(selectedMapName or "No unlocked maps")
+    end,
+    function(option)
+        selectedMapName = option.Name
+    end
+)
+CreateActionButton(
+    "TeleportToMap",
+    "TELEPORT",
+    UDim2.new(1, -138, 0, 626),
+    UDim2.fromOffset(129, 42),
+    TeleportToSelectedMap
+)
+local dungeonModes = GetUnlockedDungeonModes()
+if dungeonModes[1] then
+    selectedDungeonModeName = dungeonModes[1].Name
+end
+
+CreateSectionHeader("DungeonSection", "DUNGEON", 682)
+CreateDropdown(
+    "SelectDungeonDifficulty",
+    700,
+    UDim2.new(1, -18, 0, 42),
+    function()
+        local options = {}
+        for _, mode in ipairs(GetUnlockedDungeonModes()) do
+            table.insert(options, {
+                Name = mode.Name,
+                Label = mode.Difficulty .. " (" .. mode.Name .. ")"
+            })
+        end
+        return options
+    end,
+    function()
+        for _, mode in ipairs(GetUnlockedDungeonModes()) do
+            if mode.Name == selectedDungeonModeName then
+                return "Dungeon: " .. mode.Difficulty
+            end
+        end
+        return "Dungeon: No unlocked mode"
+    end,
+    function(option)
+        selectedDungeonModeName = option.Name
+        lastDungeonJoinAttempt = 0
+    end
+)
+
+CreateToggleRow(
+    "ToggleAutoDungeon",
+    "Auto Enter Dungeon",
+    "เข้าเมื่อดันเจี้ยนที่เลือกเปิดรับผู้เล่น",
+    746,
+    autoDungeonEnabled,
+    function(enabled)
+        if enabled and #GetUnlockedDungeonModes() == 0 then
+            warn("[WarpFarm] ไม่พบดันเจี้ยนแบบ Scheduled ที่ปลดล็อกและเข้าอัตโนมัติได้")
+            return false
+        end
+        autoDungeonEnabled = enabled
+        lastDungeonJoinAttempt = 0
+        Log(enabled and "🏰 เปิดเข้า Dungeon อัตโนมัติ" or "⏸️ ปิดเข้า Dungeon อัตโนมัติ")
+        if enabled then
+            TryJoinSelectedDungeon()
+        end
+    end
+)
+
+local unlockedGachas = GetUnlockedGachas()
+if unlockedGachas[1] then
+    selectedGachaName = unlockedGachas[1].Name
+    for _, gachaInfo in ipairs(unlockedGachas) do
+        if gachaInfo.Name == "Haki" then
+            selectedGachaName = gachaInfo.Name
+            break
+        end
+    end
+end
+
+CreateSectionHeader("GachaSection", "GACHA", 812)
+CreateDropdown(
+    "SelectAutoGacha",
+    830,
+    UDim2.new(1, -18, 0, 42),
+    function()
+        local options = {}
+        for _, gachaInfo in ipairs(GetUnlockedGachas()) do
+            local costText = gachaInfo.Cost and gachaInfo.Currency
+                and (" - " .. tostring(gachaInfo.Cost) .. " " .. tostring(gachaInfo.Currency))
+                or ""
+            table.insert(options, {
+                Name = gachaInfo.Name,
+                Label = gachaInfo.Name .. costText
+            })
+        end
+        return options
+    end,
+    function()
+        return "Gacha: " .. tostring(selectedGachaName or "No unlocked gachas")
+    end,
+    function(option)
+        if autoGachaEnabled then
+            local stopOk, stopError = pcall(function()
+                Omni.Signal:FireSelf("Interface", "Gacha", "Stop")
+            end)
+            if not stopOk then
+                warn("[WarpFarm] เปลี่ยนกาชาไม่สำเร็จ: " .. tostring(stopError))
+                return
+            end
+        end
+
+        selectedGachaName = option.Name
+        if autoGachaEnabled then
+            SetAutoGachaEnabled(true)
+        end
+    end
+)
+
+CreateToggleRow(
+    "ToggleAutoGacha",
+    "Auto Roll Gacha",
+    "สุ่มจากตู้ที่เลือกโดยไม่ต้องเดินไปหา NPC",
+    876,
+    autoGachaEnabled,
+    SetAutoGachaEnabled
+)
+
+local featureCategories = {
+    Combat = {
+        "FarmSection",
+        "ToggleFarm"
+    },
+    Team = {
+        "TeamSection",
+        "ToggleAutoEquipBest"
+    },
+    Progression = {
+        "ProgressSection",
+        "ToggleAutoClaimAchievements",
+        "ToggleAutoQuests",
+        "ToggleAutoDailyRewards",
+        "ToggleAutoTimeRewards",
+        "ToggleAutoLevel",
+        "SelectLevelStat"
+    },
+    Travel = {
+        "TravelSection",
+        "SelectTeleportMap",
+        "TeleportToMap",
+        "SelectTeleportMapOptions"
+    },
+    Dungeon = {
+        "DungeonSection",
+        "SelectDungeonDifficulty",
+        "SelectDungeonDifficultyOptions",
+        "ToggleAutoDungeon"
+    },
+    Gacha = {
+        "GachaSection",
+        "SelectAutoGacha",
+        "SelectAutoGachaOptions",
+        "ToggleAutoGacha"
+    }
+}
+
+local navigation = Instance.new("Frame")
+navigation.Name = "CategoryNavigation"
+navigation.Position = UDim2.fromOffset(8, 36)
+navigation.Size = UDim2.new(0, 160, 1, -65)
+navigation.BackgroundColor3 = Color3.fromRGB(14, 15, 16)
+navigation.BorderSizePixel = 0
+navigation.Parent = panel
+
+local navigationCorner = Instance.new("UICorner")
+navigationCorner.CornerRadius = UDim.new(0, 5)
+navigationCorner.Parent = navigation
+
+local navigationStroke = Instance.new("UIStroke")
+navigationStroke.Thickness = 1
+navigationStroke.Parent = navigation
+
+local pageHolder = Instance.new("Frame")
+pageHolder.Name = "CategoryPages"
+pageHolder.Position = UDim2.new(0, 176, 0, 36)
+pageHolder.Size = UDim2.new(1, -184, 1, -65)
+pageHolder.BackgroundTransparency = 1
+pageHolder.BorderSizePixel = 0
+pageHolder.Parent = panel
+
+local categoryPages = {}
+for categoryName in pairs(featureCategories) do
+    local page = Instance.new("ScrollingFrame")
+    page.Name = categoryName .. "Page"
+    page.Size = UDim2.fromScale(1, 1)
+    page.BackgroundTransparency = 1
+    page.BorderSizePixel = 0
+    page.ScrollBarThickness = 4
+    page.CanvasSize = UDim2.fromOffset(0, 0)
+    page.Visible = false
+    page.Parent = pageHolder
+    categoryPages[categoryName] = page
+end
+
+local categoryForControl = {}
+for categoryName, controlNames in pairs(featureCategories) do
+    for _, controlName in ipairs(controlNames) do
+        categoryForControl[controlName] = categoryName
+    end
+end
+
+local childrenByCategory = {}
+for categoryName in pairs(featureCategories) do
+    childrenByCategory[categoryName] = {}
+end
+
+for _, child in ipairs(contentFrame:GetChildren()) do
+    if not child:IsA("GuiObject") then
+        continue
+    end
+
+    local categoryName = categoryForControl[child.Name]
+    if not categoryName then
+        warn("[WarpFarm] ไม่มีหมวด UI สำหรับ " .. child.Name)
+        continue
+    end
+    table.insert(childrenByCategory[categoryName], child)
+end
+
+for categoryName, children in pairs(childrenByCategory) do
+    table.sort(children, function(a, b)
+        if a.Position.Y.Offset == b.Position.Y.Offset then
+            return a.Position.X.Scale < b.Position.X.Scale
+        end
+        return a.Position.Y.Offset < b.Position.Y.Offset
+    end)
+
+    local page = categoryPages[categoryName]
+    local yPosition = 0
+    local menuPositions = {}
+    for _, child in ipairs(children) do
+        if child.Name:sub(-7) == "Options" then
+            continue
+        end
+
+        child.Parent = page
+        child.Position = UDim2.new(child.Position.X.Scale, child.Position.X.Offset, 0, yPosition)
+        if child.Name == "SelectTeleportMap" or child.Name == "SelectDungeonDifficulty" then
+            menuPositions[child.Name .. "Options"] = yPosition + child.Size.Y.Offset + 2
+        end
+        yPosition += child.Size.Y.Offset + 8
+    end
+
+    for _, child in ipairs(children) do
+        if child.Name:sub(-7) == "Options" then
+            child.Parent = page
+            child.Position = UDim2.fromOffset(9, menuPositions[child.Name] or yPosition)
+        end
+    end
+
+    page.CanvasSize = UDim2.fromOffset(0, yPosition + 8)
+end
+contentFrame:Destroy()
+
+local activeCategory = "Combat"
+local categoryButtons = {}
+local function AddNavigationLabel(text, yPosition)
+    local label = Instance.new("TextLabel")
+    label.Name = text:gsub("%W", "") .. "Group"
+    label.Position = UDim2.fromOffset(12, yPosition)
+    label.Size = UDim2.new(1, -20, 0, 16)
+    label.BackgroundTransparency = 1
+    label.Font = Enum.Font.FredokaOne
+    label.Text = text
+    label.TextColor3 = Color3.fromRGB(130, 132, 135)
+    label.TextSize = 11
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = navigation
+end
+
+local function AddCategoryButton(categoryName, text, yPosition)
+    local button = Instance.new("TextButton")
+    button.Name = categoryName .. "Navigation"
+    button.Position = UDim2.fromOffset(6, yPosition)
+    button.Size = UDim2.new(1, -12, 0, 30)
+    button.BackgroundColor3 = Color3.fromRGB(14, 15, 16)
+    button.BackgroundTransparency = 1
+    button.BorderSizePixel = 0
+    button.Font = Enum.Font.GothamBold
+    button.Text = "  " .. text
+    button.TextColor3 = Color3.fromRGB(205, 207, 210)
+    button.TextSize = 14
+    button.TextXAlignment = Enum.TextXAlignment.Left
+    button.Parent = navigation
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 4)
+    corner.Parent = button
+
+    button.Activated:Connect(function()
+        activeCategory = categoryName
+        for name, page in pairs(categoryPages) do
+            page.Visible = name == activeCategory
+        end
+        UpdateCategoryNavigation()
+    end)
+    categoryButtons[categoryName] = button
+end
+
+UpdateCategoryNavigation = function()
+    local accent = themes[activeThemeIndex].Accent
+    for name, button in pairs(categoryButtons) do
+        button.BackgroundColor3 = name == activeCategory and accent or Color3.fromRGB(14, 15, 16)
+        button.BackgroundTransparency = name == activeCategory and 0.08 or 1
+        button.TextColor3 = name == activeCategory and Color3.fromRGB(20, 20, 20) or Color3.fromRGB(205, 207, 210)
+    end
+end
+
+AddNavigationLabel("AUTO", 8)
+AddCategoryButton("Combat", "⚔  Farming", 26)
+AddCategoryButton("Dungeon", "◆  Dungeon", 60)
+AddCategoryButton("Gacha", "🎰  Gacha", 94)
+AddNavigationLabel("GENERAL", 138)
+AddCategoryButton("Team", "★  Team", 156)
+AddCategoryButton("Progression", "✦  Rewards", 190)
+AddCategoryButton("Travel", "⌖  Teleport", 224)
+
+categoryPages[activeCategory].Visible = true
+UpdateCategoryNavigation()
+ApplyTheme()
+
+SetFarmEnabled(true)
+SetAutoEquipEnabled(true)
+SetAutoClaimAchievementsEnabled(true)
+SetAutoQuestsEnabled(true)
+SetAutoDailyRewardsEnabled(autoDailyRewardsEnabled)
+SetAutoTimeRewardsEnabled(autoTimeRewardsEnabled)
+Log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+Log("  🔥 AUTO WARP FARM พร้อมทำงาน!")
+Log("  ใช้ปุ่มบนหน้าจอควบคุมฟาร์ม นักสู้ และการรับเควส/ความสำเร็จ")
+Log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+task.spawn(function()
+    while true do
+        task.wait(30)
+        if autoEquipEnabled then
+            EquipBestGear()
+        end
+    end
+end)
+
+task.spawn(function()
+    while true do
+        if autoLevelEnabled then
+            UpgradeSelectedLevelStat()
+        end
+        task.wait(0.5)
+    end
+end)
+
+task.spawn(function()
+    while true do
+        if autoDailyRewardsEnabled then
+            ClaimAvailableDailyRewards()
+        end
+        task.wait(1)
+    end
+end)
+
+task.spawn(function()
+    while true do
+        if autoTimeRewardsEnabled then
+            ClaimAvailableTimeRewards()
+        end
+        task.wait(5)
+    end
+end)
+
+task.spawn(function()
+    while true do
+        if autoDungeonEnabled then
+            TryJoinSelectedDungeon()
+        end
+        task.wait(5)
+    end
+end)
+
+task.spawn(function()
+    while true do
+        if not farmEnabled then
+            task.wait(0.2)
+            continue
+        end
+
+        local hrp = GetHRP()
+        if not hrp then
+            task.wait(0.5)
+            continue
+        end
+
+        -- 1. สแกนหามอนสเตอร์ที่ยังมีชีวิต
+        local enemies = GetAllLivingEnemies()
+        if #enemies == 0 then
+            -- ถ้าแมพยังไม่มีมอนเกิด รอแป๊บเดียวแล้วหาใหม่
+            task.wait(0.5)
+            continue
+        end
+
+        -- 2. เลือกมอนตัวที่ใกล้ที่สุด
+        local target = FindNearestEnemy(enemies)
+        if not target then
+            task.wait(0.3)
+            continue
+        end
+
+        Log(string.format("🎯 ล็อคเป้า: [%s] (HP: %s) — กำลังเคลื่อนเข้าไปโจมตี!", tostring(target.Name), tostring(math.floor(target.Health))))
+
+        -- 3. เคลื่อนตามเป้าหมายแบบนุ่มนวลและโจมตีเป็นจังหวะจนกว่ามอนจะตาย
+        local lastAttackAt = 0
+        while farmEnabled do
+            local currentHRP = GetHRP()
+            if not currentHRP then break end
+
+            -- ตรวจสอบว่าเป้าหมายยังอยู่และยังมีชีวิตอยู่หรือไม่
+            local isAlive = false
+            local latestCF = nil
+
+            -- เช็คจาก Wrapper
+            if target.Wrapper and target.Wrapper.Data and target.Wrapper.Data.Health then
+                local hp = target.Wrapper.Data.Health.Value
+                local isDied = target.Wrapper.Instance and target.Wrapper.Instance:GetAttribute("Died") == true
+                if hp > 0 and not isDied then
+                    isAlive = true
+                    if target.Wrapper.HRP then
+                        latestCF = target.Wrapper.HRP.CFrame
+                    elseif target.Wrapper.Data.CurrentPosition then
+                        latestCF = target.Wrapper.Data.CurrentPosition.Value
+                    end
+                end
+            -- เช็คจาก Instance BasePart / Model
+            elseif target.Instance and target.Instance.Parent then
+                local data = target.Instance:FindFirstChild("Data")
+                local hpVal = data and data:FindFirstChild("Health")
+                local isDied = target.Instance:GetAttribute("Died") == true
+                local hum = target.Instance:FindFirstChildWhichIsA("Humanoid")
+                local hasHealth = hpVal ~= nil or hum ~= nil
+
+                -- ถ้าอ่านค่า HP ไม่ได้แต่เป้ายังอยู่ ให้ตีต่อแทนการสลับเป้าก่อนเวลา
+                if not isDied and ((hpVal and hpVal.Value > 0) or (hum and hum.Health > 0) or not hasHealth) then
+                    isAlive = true
+                    latestCF = target.Instance:IsA("BasePart") and target.Instance.CFrame or target.Instance:GetPivot()
+                end
+            end
+
+            -- เปลี่ยนเป้าหมายเมื่อยืนยันว่าตายแล้ว หรือ Instance ถูกนำออกจากเกมเท่านั้น
+            if not isAlive then
+                Log(string.format("💀 มอนสเตอร์ [%s] ตายหรือถูกนำออกแล้ว! วาปไปตัวต่อไป...", tostring(target.Name)))
+                break
+            end
+
+            -- ขยับตามตำแหน่งมอนอย่างต่อเนื่อง แทนการวาร์ปซ้ำทุกครั้งที่โจมตี
+            local targetPos = (latestCF or target.CFrame)
+            local hoverPosition = (targetPos * CFrame.new(0, CFG.HeightOffset, CFG.DistanceOffset)).Position
+            local desiredCF = CFrame.new(hoverPosition) * currentHRP.CFrame.Rotation
+            local deltaTime = RunService.Heartbeat:Wait()
+            if not farmEnabled then break end
+
+            local blend = 1 - math.exp(-CFG.FollowSmoothness * deltaTime)
+
+            currentHRP.CFrame = currentHRP.CFrame:Lerp(desiredCF, blend)
+            currentHRP.AssemblyLinearVelocity = Vector3.zero
+            currentHRP.AssemblyAngularVelocity = Vector3.zero
+
+            -- คุมจังหวะโจมตีแยกจากการเคลื่อนที่ เพื่อให้การตามเป้าหมายลื่นไหล
+            local now = os.clock()
+            if now - lastAttackAt >= CFG.AttackSpeed then
+                Attack(target)
+                lastAttackAt = now
+            end
+        end
+
+        if farmEnabled then
+            -- หน่วงเวลาจิ๊บจ๊อยก่อนวาปไปตัวต่อไปเพื่อความลื่นไหล
+            task.wait(0.05)
+        end
+    end
+end)
